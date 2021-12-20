@@ -5,20 +5,12 @@ import traceback
 import urllib.request
 from time import sleep, time
 
-UDP_MAX_SIZE = 65535
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-ASSETS = {
-    "action": "assets",
-    "message": {
-        "assets": [
-            {"id": 1, "name": "EURUSD"},
-            {"id": 2, "name": "USDJPY"},
-            {"id": 3, "name": "GBPUSD"},
-            {"id": 4, "name": "AUDUSD"},
-            {"id": 5, "name": "USDCAD"},
-        ],
-    },
-}
+from models import Base, Asset
+
+UDP_MAX_SIZE = 65535
 
 
 def get_asset_name_by_id(asset_id):
@@ -30,7 +22,20 @@ def get_asset_history(asset_name):
 
 
 def get_assets(message, addr, subscribers_to_assets):
-    return ASSETS
+    with Session() as session:
+        assets = session.query(Asset).all()
+    result = {
+        "action": "assets",
+        "message": {
+            "assets": [
+                {
+                    "id": asset.id,
+                    "name": asset.name,
+                } for asset in assets
+            ],
+        },
+    }
+    return result
 
 
 def subscribe(message, addr, subscribers_to_assets):
@@ -87,8 +92,8 @@ def error_callback(e):
 
 def listen(host: str = '127.0.0.1', port: int = 8080):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
     s.bind((host, port))
+    print(f'Listening at {host}:{port}')
 
     manager = multiprocessing.Manager()
     new_ratios_queue = manager.Queue()
@@ -105,14 +110,8 @@ def listen(host: str = '127.0.0.1', port: int = 8080):
     pool.apply_async(get_new_ratios, (new_ratios_queue, subscribers_to_assets.keys()), error_callback=error_callback)
     pool.apply_async(notify_subscribers, (new_ratios_queue, subscribers_to_assets, s), error_callback=error_callback)
 
-    print(f'Listening at {host}:{port}')
-
-    members = []
     while True:
         msg, addr = s.recvfrom(UDP_MAX_SIZE)
-
-        if addr not in members:
-            members.append(addr)
 
         if not msg:
             continue
@@ -125,4 +124,18 @@ def listen(host: str = '127.0.0.1', port: int = 8080):
 
 
 if __name__ == '__main__':
+    engine = create_engine("sqlite+pysqlite:///:memory:", echo=True, future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        session.add_all(
+            [
+                Asset(name="EURUSD"),
+                Asset(name="USDJPY"),
+                Asset(name="GBPUSD"),
+                Asset(name="AUDUSD"),
+                Asset(name="USDCAD"),
+            ]
+        )
+        session.commit()
     listen()
