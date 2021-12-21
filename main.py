@@ -13,10 +13,6 @@ from models import Base, Asset
 UDP_MAX_SIZE = 65535
 
 
-def get_asset_name_by_id(asset_id):
-    return "EURUSD"
-
-
 def get_asset_history(asset_name):
     return []
 
@@ -42,11 +38,13 @@ def subscribe(message, addr, subscribers_to_assets):
     for asset, subscribers in subscribers_to_assets.items():
         if addr in subscribers:
             subscribers.remove(addr)
-    asset_name = get_asset_name_by_id(message.get("assetId"))
-    subscribers_to_asset = subscribers_to_assets[asset_name]
-    subscribers_to_asset.add(addr)
-    subscribers_to_assets[asset_name] = subscribers_to_asset
-    return get_asset_history(asset_name)
+    with Session() as session:
+        chosen_asset = session.query(Asset).filter(Asset.id == message.get("assetId")).first()
+    if chosen_asset:
+        subscribers_to_asset = subscribers_to_assets[chosen_asset.name]
+        subscribers_to_asset.add(addr)
+        subscribers_to_assets[chosen_asset.name] = subscribers_to_asset
+        return get_asset_history(chosen_asset.name)
 
 
 HANDLERS = {
@@ -56,6 +54,8 @@ HANDLERS = {
 
 
 def get_new_ratios(queue_out, assets):
+    engine = create_engine("sqlite:////tmp/ibit.db", echo=False, future=True)
+    Session = sessionmaker(bind=engine)
     while True:
         with urllib.request.urlopen('https://ratesjson.fxcm.com/DataDisplayer') as f:
             result = json.loads(f.read()[5:].strip()[:-2].replace(b',}', b'}'))
@@ -69,18 +69,22 @@ def get_new_ratios(queue_out, assets):
 
 
 def notify_subscribers(in_queue, subscribers_to_assets, s):
+    engine = create_engine("sqlite:////tmp/ibit.db", echo=False, future=True)
+    Session = sessionmaker(bind=engine)
     while True:
         new_ratios = in_queue.get()
         print("Got new message to notify")
-        for asset in subscribers_to_assets.keys():
-            for subscriber in subscribers_to_assets[asset]:
+        for asset_name in subscribers_to_assets.keys():
+            for subscriber in subscribers_to_assets[asset_name]:
+                with Session() as session:
+                    chosen_asset = session.query(Asset).filter(Asset.name == asset_name).first()
                 result = {
                     "action": "point",
                     "message": {
-                        "assetName": asset,
+                        "assetName": asset_name,
                         "time": int(time()),
-                        "assetId": 1,
-                        "value": new_ratios[asset],
+                        "assetId": chosen_asset.id,
+                        "value": new_ratios[asset_name],
                     },
                 }
                 s.sendto(json.dumps(result).encode('ascii'), subscriber)
@@ -124,18 +128,20 @@ def listen(host: str = '127.0.0.1', port: int = 8080):
 
 
 if __name__ == '__main__':
-    engine = create_engine("sqlite+pysqlite:///:memory:", echo=True, future=True)
+    engine = create_engine("sqlite:////tmp/ibit.db", echo=True, future=True)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     with Session() as session:
-        session.add_all(
-            [
-                Asset(name="EURUSD"),
-                Asset(name="USDJPY"),
-                Asset(name="GBPUSD"),
-                Asset(name="AUDUSD"),
-                Asset(name="USDCAD"),
-            ]
-        )
-        session.commit()
+        assets = session.query(Asset).all()
+        if not assets:
+            session.add_all(
+                [
+                    Asset(name="EURUSD"),
+                    Asset(name="USDJPY"),
+                    Asset(name="GBPUSD"),
+                    Asset(name="AUDUSD"),
+                    Asset(name="USDCAD"),
+                ]
+            )
+            session.commit()
     listen()
