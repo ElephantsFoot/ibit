@@ -18,9 +18,10 @@ def connect(host: str = '127.0.0.1', port: int = 8080):
     s.connect((host, port))
 
     threading.Thread(target=listen, args=(s,), daemon=True).start()
-    print("Enter 'assets' to get assets names")
 
     while True:
+        print("Enter 'assets' to get assets names")
+        print("Enter 'subscribe <id>' to subscribe to certain asset")
         commands = input().split()
         msg = None
         if commands[0].lower() == "assets":

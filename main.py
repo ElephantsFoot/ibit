@@ -3,18 +3,30 @@ import multiprocessing
 import socket
 import traceback
 import urllib.request
+from datetime import datetime, timedelta
 from time import sleep, time
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from models import Base, Asset
+from models import Base, Asset, Point
 
 UDP_MAX_SIZE = 65535
 
 
-def get_asset_history(asset_name):
-    return []
+def get_asset_history(chosen_asset):
+    with Session() as session:
+        points = session.query(Point).filter(Point.asset == chosen_asset).filter(
+            Point.created_on > datetime.utcnow() - timedelta(minutes=2)).all()
+    return [
+        {
+            "assetName": chosen_asset.name,
+            "time": int(point.created_on.timestamp()),
+            "assetId": chosen_asset.id,
+            "value": point.value,
+        }
+        for point in points
+    ]
 
 
 def get_assets(message, addr, subscribers_to_assets):
@@ -35,16 +47,23 @@ def get_assets(message, addr, subscribers_to_assets):
 
 
 def subscribe(message, addr, subscribers_to_assets):
-    for asset, subscribers in subscribers_to_assets.items():
-        if addr in subscribers:
-            subscribers.remove(addr)
+    for asset in subscribers_to_assets.keys():
+        subscribers_to_asset = subscribers_to_assets[asset]
+        if addr in subscribers_to_asset:
+            subscribers_to_asset.remove(addr)
+            subscribers_to_assets[asset] = subscribers_to_asset
     with Session() as session:
         chosen_asset = session.query(Asset).filter(Asset.id == message.get("assetId")).first()
     if chosen_asset:
         subscribers_to_asset = subscribers_to_assets[chosen_asset.name]
         subscribers_to_asset.add(addr)
         subscribers_to_assets[chosen_asset.name] = subscribers_to_asset
-        return get_asset_history(chosen_asset.name)
+        return {
+            "action": "asset_history",
+            "message": {
+                "points": get_asset_history(chosen_asset),
+            },
+        }
 
 
 HANDLERS = {
@@ -64,6 +83,22 @@ def get_new_ratios(queue_out, assets):
             if rate["Symbol"] in assets:
                 new_ratios[rate["Symbol"]] = (float(rate["Bid"]) + float(rate["Ask"])) / 2
         print(new_ratios)
+        with Session() as session:
+            session.add_all(
+                [
+                    Point(value=new_ratios["EURUSD"],
+                          asset=session.query(Asset).filter(Asset.name == "EURUSD").first()),
+                    Point(value=new_ratios["USDJPY"],
+                          asset=session.query(Asset).filter(Asset.name == "USDJPY").first()),
+                    Point(value=new_ratios["GBPUSD"],
+                          asset=session.query(Asset).filter(Asset.name == "GBPUSD").first()),
+                    Point(value=new_ratios["AUDUSD"],
+                          asset=session.query(Asset).filter(Asset.name == "AUDUSD").first()),
+                    Point(value=new_ratios["USDCAD"],
+                          asset=session.query(Asset).filter(Asset.name == "USDCAD").first()),
+                ]
+            )
+            session.commit()
         queue_out.put(new_ratios)
         sleep(1)
 
